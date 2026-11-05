@@ -1,0 +1,71 @@
+# Dependencies and generated output
+node_modules/
+build/
+dist/
+.gradle/
+bin/
+out/
+target/
+coverage/
+.next/
+
+# IDE, machine-specific and archive metadata
+.idea/
+.vscode/
+.VSCodeCounter/
+__MACOSX/
+.DS_Store
+._*
+local.properties
+*.iml
+*.log
+*.hprof
+
+# Local credentials; publish examples only
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.key
+*.p12
+*.jks
+*.keystore
+
+# Project-specific rules
+# Dependencies and generated output
+**/node_modules/
+**/build/
+**/dist/
+**/coverage/
+**/target/
+**/.cache/
+**/.gradle/
+
+# Private environment files; commit examples only
+**/.env
+**/.env.*
+!**/.env.example
+
+# Local editor and operating-system files
+**/.idea/
+**/.vscode/
+**/.VSCodeCounter/
+**/__MACOSX/
+**/.DS_Store
+**/._*
+**/*.iml
+**/local.properties
+**/Thumbs.db
+**/desktop.ini
+
+# Logs and temporary files
+**/*.log
+**/*.tmp
+**/*.temp
+**/*.pid
+**/.eslintcache
+
+# User-uploaded documents are private runtime data
+/server/uploads/*
+!/server/uploads/.gitkeep

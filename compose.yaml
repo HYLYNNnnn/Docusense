@@ -1,0 +1,11 @@
+services:
+  docusense:
+    build: .
+    env_file: server/.env
+    environment:
+      HOST: 0.0.0.0
+      PORT: 5001
+    ports:
+      - "127.0.0.1:5001:5001"
+    init: true
+    restart: unless-stopped
