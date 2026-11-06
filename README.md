@@ -4,6 +4,8 @@ A PDF question-answering application built with React, Ant Design, Express, Lang
 
 [Demo](#demo) · [Features](#what-works) · [Run locally](#local-setup) · [API setup](#using-a-personal-api-key)
 
+![DocuSense PDF upload and AI settings interface](docs/images/app-preview.png)
+
 ## Demo
 
 [▶ Watch the DocuSense demo](https://drive.google.com/file/d/1Zq19IsJ1KP_Tukoe9ms7PuynsdLYulZF/view?usp=sharing)
