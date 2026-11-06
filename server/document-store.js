@@ -52,6 +52,12 @@ function waitWithSignal(promise, signal) {
   });
 }
 
+// Only vector operations are used after indexing; retain no credential-bearing closures.
+const cachedEmbeddings = {
+  embedDocuments: async () => { throw new Error('Cached indexes require explicit request embeddings.'); },
+  embedQuery: async () => { throw new Error('Cached indexes require explicit request embeddings.'); },
+};
+
 /** In-memory, session-scoped PDF indexes. The provider is injected; tests never need an API key. */
 export class DocumentStore {
   #provider;
@@ -123,11 +129,11 @@ export class DocumentStore {
     this.#removeDocument(document);
   }
 
-  async create(buffer, { name = "document.pdf", sessionId, signal } = {}) {
+  async create(buffer, { name = "document.pdf", sessionId, signal, provider = this.#provider, credentialScope = 'server' } = {}) {
     const session = this.#getSession(sessionId);
     throwIfAborted(signal);
     validatePdfBuffer(buffer, this.#limits);
-    if (!this.isReady()) {
+    if (typeof provider.isReady === 'function' && !provider.isReady()) {
       throw new RagError(503, "AI_NOT_CONFIGURED", "The AI service is not configured. Please ask the server owner to add an API key.");
     }
     const safeName = typeof name === "string"
@@ -137,10 +143,11 @@ export class DocumentStore {
     const digest = createHash("sha256").update(buffer).digest("hex");
     for (const id of session.documents) {
       const existing = this.#documents.get(id);
-      if (existing?.digest === digest) return metadata(existing);
+      if (existing?.digest === digest && existing.credentialScope === credentialScope) return metadata(existing);
     }
     // Repeated uploads in the same session share work; different sessions never share indexes.
-    if (session.inflight.has(digest)) return waitWithSignal(session.inflight.get(digest), signal);
+    const inflightKey = `${credentialScope}:${digest}`;
+    if (session.inflight.has(inflightKey)) return waitWithSignal(session.inflight.get(inflightKey), signal);
     if (session.documents.size + session.pendingUploads >= this.#limits.maxDocumentsPerSession) {
       throw new RagError(429, "DOCUMENT_LIMIT", "Please remove a document before uploading another PDF.");
     }
@@ -151,12 +158,12 @@ export class DocumentStore {
     session.activeRequests += 1;
     this.#pendingUploads += 1;
     const linkedSignal = combineSignals(signal, session.controller.signal);
-    const operation = this.#index(buffer, { name: safeName, session, digest, signal: linkedSignal });
-    session.inflight.set(digest, operation);
+    const operation = this.#index(buffer, { name: safeName, session, digest, signal: linkedSignal, provider, credentialScope });
+    session.inflight.set(inflightKey, operation);
     try {
       return await operation;
     } finally {
-      session.inflight.delete(digest);
+      session.inflight.delete(inflightKey);
       session.pendingUploads -= 1;
       session.activeRequests -= 1;
       session.lastSeen = this.#now();
@@ -164,9 +171,12 @@ export class DocumentStore {
     }
   }
 
-  async ask({ documentId, sessionId, question, signal } = {}) {
+  async ask({ documentId, sessionId, question, signal, provider = this.#provider, credentialScope = 'server' } = {}) {
     const session = this.#getSession(sessionId);
     const document = this.#ownedDocument(documentId, session.id);
+    if (document.credentialScope !== credentialScope) {
+      throw new RagError(409, 'AI_KEY_MISMATCH', 'Use the same API key source and key that indexed this PDF, or upload it again with your new key.');
+    }
     throwIfAborted(signal);
     if (typeof question !== "string" || !question.trim() || Array.from(question.trim()).length > this.#limits.maxQuestionCharacters) {
       throw new RagError(400, "INVALID_QUESTION", `Please enter a question of 1 to ${this.#limits.maxQuestionCharacters} characters.`);
@@ -180,7 +190,7 @@ export class DocumentStore {
     const operation = document.queue.then(async () => {
       throwIfAborted(linkedSignal);
       this.#ownedDocument(documentId, session.id);
-      return this.#answer(document, question.trim(), linkedSignal);
+      return this.#answer(document, question.trim(), linkedSignal, provider);
     });
     const settled = operation.finally(() => {
       document.pendingQuestions -= 1;
@@ -199,7 +209,7 @@ export class DocumentStore {
     for (const session of this.#sessions.values()) this.#removeSession(session);
   }
 
-  async #index(buffer, { name, session, digest, signal }) {
+  async #index(buffer, { name, session, digest, signal, provider, credentialScope }) {
     const parsed = await this.#parsePdf(buffer, { signal, limits: this.#limits });
     throwIfAborted(signal);
     this.#validateParsed(parsed);
@@ -211,20 +221,17 @@ export class DocumentStore {
     if (chunks.length > this.#limits.maxChunks) throw new RagError(413, "PDF_CHUNK_LIMIT", "The PDF contains too much text. Please upload a smaller PDF.");
     chunks.forEach((chunk, index) => { chunk.metadata.chunk = index; });
     throwIfAborted(signal);
-    const vectors = await this.#provider.embedDocuments(chunks.map((chunk) => chunk.pageContent), { signal });
+    const vectors = await provider.embedDocuments(chunks.map((chunk) => chunk.pageContent), { signal });
     throwIfAborted(signal);
     const dimensions = validateVectors(vectors, chunks.length);
     // addVectors reuses the single batch above; asking a question never embeds the PDF again.
-    const vectorStore = new MemoryVectorStore({
-      embedDocuments: (texts) => this.#provider.embedDocuments(texts, { signal }),
-      embedQuery: (text) => this.#provider.embedQuery(text, { signal }),
-    });
+    const vectorStore = new MemoryVectorStore(cachedEmbeddings);
     await vectorStore.addVectors(vectors, chunks);
     throwIfAborted(signal);
     this.#assertOpen();
     if (!this.#sessions.has(session.id)) throw new RagError(401, "SESSION_EXPIRED", "Your document session has expired. Please upload the PDF again.");
     const document = {
-      id: randomUUID(), sessionId: session.id, digest, name,
+      id: randomUUID(), sessionId: session.id, digest, name, credentialScope,
       pageCount: parsed.pageCount, chunkCount: chunks.length, dimensions, vectorStore,
       history: [], queue: Promise.resolve(), pendingQuestions: 0, controller: new AbortController(),
     };
@@ -233,11 +240,11 @@ export class DocumentStore {
     return metadata(document);
   }
 
-  async #answer(document, question, signal) {
+  async #answer(document, question, signal, provider) {
     const history = document.history.map((turn) => ({ ...turn }));
     // A short prior-question window makes follow-ups useful without embedding the whole conversation.
     const retrievalQuery = [...history.slice(-2).map((turn) => turn.question), question].join("\n");
-    const vector = await this.#provider.embedQuery(retrievalQuery, { signal });
+    const vector = await provider.embedQuery(retrievalQuery, { signal });
     throwIfAborted(signal);
     validateVectors([vector], 1, document.dimensions);
     const matches = await document.vectorStore.similaritySearchVectorWithScore(vector, document.chunkCount);
@@ -254,7 +261,7 @@ export class DocumentStore {
     if (!sources.length) {
       answer = "I could not find relevant information in this document. Please ask a question about its contents.";
     } else {
-      answer = await this.#provider.answer({ question, context: sources.map((source) => ({ ...source })), history, signal });
+      answer = await provider.answer({ question, context: sources.map((source) => ({ ...source })), history, signal });
     }
     throwIfAborted(signal);
     this.#ownedDocument(document.id, document.sessionId);

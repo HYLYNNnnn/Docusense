@@ -1,6 +1,7 @@
 import {
   ApiError, askQuestion, clearSession, deleteDocument, getSessionId, listDocuments,
   MAX_PDF_BYTES, SESSION_EXPIRED_EVENT, uploadDocument,
+  getAIConfig,
 } from "./api";
 
 const session = "a".repeat(64);
@@ -113,5 +114,42 @@ test("network failures are plain safe errors and answers cannot come from the wr
 test("a response cannot silently replace an existing capability", async () => {
   seed();fetch.mockResolvedValue(response({ document, session_id: "b".repeat(64) }, 201));
   await expect(uploadDocument(pdf())).rejects.toBeInstanceOf(ApiError);
+  expect(getSessionId()).toBe(session);
+});
+
+test('personal credentials are only sent on upload/chat headers, never stored or included in JSON', async () => {
+  const options = { keySource: 'personal', apiKey: 'test-personal-key' };
+  fetch.mockResolvedValueOnce(response({ document, session_id: session }, 201))
+    .mockResolvedValueOnce(response({ answer: 'Answer', document_id: document.id, session_id: session }))
+    .mockResolvedValueOnce(response({ documents: [document], session_id: session }));
+  await uploadDocument(pdf(), options);
+  await askQuestion(document.id, 'Question?', options);
+  await listDocuments();
+  const upload = fetch.mock.calls[0][1];
+  const chat = fetch.mock.calls[1][1];
+  expect(upload.headers['X-OpenAI-Api-Key']).toBe('test-personal-key');
+  expect(upload.headers['X-AI-Key-Source']).toBe('personal');
+  expect(chat.headers['X-OpenAI-Api-Key']).toBe('test-personal-key');
+  expect(chat.body).not.toContain('test-personal-key');
+  expect(fetch.mock.calls[2][1].headers['X-OpenAI-Api-Key']).toBeUndefined();
+  expect(JSON.stringify({ ...sessionStorage, ...localStorage })).not.toContain('test-personal-key');
+});
+
+test('missing personal keys are blocked and never fall back to server credentials', async () => {
+  seed();
+  await expect(uploadDocument(pdf(), { keySource: 'personal', apiKey: ' ' })).rejects.toMatchObject({ status: 400 });
+  await expect(askQuestion(document.id, 'Question?', { keySource: 'personal' })).rejects.toMatchObject({ status: 400 });
+  expect(fetch).not.toHaveBeenCalled();
+});
+
+test('AI configuration reads do not send a key; provider auth errors preserve the document session', async () => {
+  seed();
+  const settings = { server_configured: false, user_keys_allowed: true,
+    chat_model: 'gpt-5.6-terra', embedding_model: 'text-embedding-3-small' };
+  fetch.mockResolvedValueOnce(response(settings)).mockResolvedValueOnce(response({ message: 'Selected key rejected' }, 503));
+  expect(await getAIConfig()).toEqual(settings);
+  expect(fetch.mock.calls[0][1].headers['X-OpenAI-Api-Key']).toBeUndefined();
+  await expect(askQuestion(document.id, 'Question?', { keySource: 'personal', apiKey: 'test-key' }))
+    .rejects.toMatchObject({ status: 503 });
   expect(getSessionId()).toBe(session);
 });

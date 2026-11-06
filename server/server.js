@@ -11,9 +11,12 @@ const store = new DocumentStore({ provider });
 const port = Number(process.env.PORT || 5001);
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('PORT must be an integer between 1 and 65535.');
 const origins = (process.env.CORS_ORIGINS || `http://localhost:3000,http://127.0.0.1:3000,http://localhost:${port},http://127.0.0.1:${port}`).split(',').map((v) => v.trim()).filter(Boolean);
-const app = createApp({ store, provider, staticDir: path.resolve(here, '../build'), corsOrigins: origins });
+const allowUserKeysValue = (process.env.ALLOW_USER_API_KEYS || 'false').trim().toLowerCase();
+if (!['true', 'false'].includes(allowUserKeysValue)) throw new Error('ALLOW_USER_API_KEYS must be true or false.');
+const app = createApp({ store, provider, staticDir: path.resolve(here, '../build'), corsOrigins: origins,
+  allowUserKeys: allowUserKeysValue === 'true' });
 const server = app.listen(port, process.env.HOST || '127.0.0.1', () => {
-  console.log(`DocuSense listening on port ${port}. AI ${provider.configured ? 'configured' : 'not configured; set server/.env OPENAI_API_KEY'}.`);
+  console.log(`DocuSense listening on port ${port}. Server AI ${provider.configured ? 'configured' : 'not configured'}. Personal keys ${allowUserKeysValue === 'true' ? 'enabled' : 'disabled'}.`);
 });
 server.requestTimeout = 180_000;
 server.headersTimeout = 30_000;

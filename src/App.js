@@ -3,6 +3,7 @@ import { Alert, Button, Empty, Layout, Popconfirm, Select, Space, Spin, Typograp
 import PdfUploader from "./components/PdfUploader";
 import ChatComponent from "./components/ChatComponent";
 import RenderQA from "./components/RenderQA";
+import AISettings from './components/AISettings';
 import {
   askQuestion, deleteDocument, getSelectedDocumentId, getSessionId, listDocuments,
   rememberSelectedDocument, SESSION_EXPIRED_EVENT, uploadDocument,
@@ -20,6 +21,7 @@ export default function App() {
   const [deleting, setDeleting] = useState(false);
   const [chatting, setChatting] = useState(false);
   const [error, setError] = useState("");
+  const [aiConnection, setAIConnection] = useState({ ready: false, options: {} });
   const requestVersion = useRef(0);
   const chatController = useRef(null);
   const uploadController = useRef(null);
@@ -79,6 +81,7 @@ export default function App() {
   }, [cancelChat]);
 
   const handleUpload = async (file) => {
+    if (!aiConnection.ready) throw new Error('Set up your API key in AI settings before uploading a PDF.');
     if (uploadController.current) throw new Error("Please wait for the current PDF to finish indexing.");
     cancelChat();
     setUploading(true);
@@ -86,7 +89,7 @@ export default function App() {
     const controller = new AbortController();
     uploadController.current = controller;
     try {
-      const result = await uploadDocument(file, { signal: controller.signal });
+      const result = await uploadDocument(file, { signal: controller.signal, ...aiConnection.options });
       if (controller.signal.aborted || !mounted.current) return;
       const document = result.document;
       setDocuments((current) => [...current.filter((item) => item.id !== document.id), document]);
@@ -105,14 +108,14 @@ export default function App() {
   };
 
   const handleAsk = async (question) => {
-    if (!selectedId || uploading || deleting || chatController.current) return null;
+    if (!selectedId || uploading || deleting || chatController.current || !aiConnection.ready) return null;
     const documentId = selectedId;
     const version = ++requestVersion.current;
     const controller = new AbortController();
     chatController.current = controller;
     setChatting(true);
     try {
-      const response = await askQuestion(documentId, question, { signal: controller.signal });
+      const response = await askQuestion(documentId, question, { signal: controller.signal, ...aiConnection.options });
       if (!mounted.current || controller.signal.aborted || version !== requestVersion.current) return null;
       setConversations((current) => ({ ...current, [documentId]: [
         ...(current[documentId] || []), { id: version, question: question.trim(), answer: response.answer, sources: response.sources },
@@ -156,11 +159,12 @@ export default function App() {
       </Header>
       <Content style={{ width: "100%", maxWidth: 1000, margin: "0 auto", padding: "24px", boxSizing: "border-box" }}>
         <Text>Upload a PDF, then ask questions grounded in that document.</Text>
+        <AISettings disabled={uploading || chatting || deleting} onChange={setAIConnection} />
         {error && <Alert style={{ marginTop: 16 }} type="error" showIcon message={error} closable onClose={() => setError("")} />}
         {restoring ? <div role="status" style={{ padding: 24 }}><Spin /> Restoring your documents…</div> : (
           <>
             <div style={{ margin: "20px 0" }}>
-              <PdfUploader onUpload={handleUpload} uploading={uploading} disabled={deleting || documents.length >= 3} />
+              <PdfUploader onUpload={handleUpload} uploading={uploading} disabled={deleting || chatting || !aiConnection.ready || documents.length >= 3} />
             </div>
             {uploading && <div role="status">Reading and indexing your PDF…</div>}
             {documents.length >= 3 && <Alert type="info" message="This session has three PDFs. Delete one before uploading another." style={{ marginBottom: 16 }} />}
@@ -180,7 +184,7 @@ export default function App() {
               </div>
             </>}
             <ChatComponent key={selectedId || "no-document"} onAsk={handleAsk}
-              disabled={!selected || uploading || deleting} isLoading={chatting} />
+              disabled={!selected || uploading || deleting || !aiConnection.ready} isLoading={chatting} />
           </>
         )}
       </Content>

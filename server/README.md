@@ -7,6 +7,7 @@ All routes accept the `/api` prefix. Unprefixed equivalents exist for the develo
 | Method | Route | Request | Response |
 | --- | --- | --- | --- |
 | GET | `/api/health` | None | `{status, ai_configured}` |
+| GET | `/api/ai-config` | None | `{server_configured,user_keys_allowed,chat_model,embedding_model}`; no credentials |
 | POST | `/api/upload` | Multipart field `file`, exactly one PDF, no extra fields | 201 `{document:{id,name,page_count,chunk_count},session_id}` |
 | GET | `/api/documents` | `X-Session-Id` header | `{documents:[...],session_id}` |
 | POST | `/api/chat` | Header plus JSON `{document_id,question,session_id?}` | `{answer,sources:[{page,text}],document_id,session_id}` |
@@ -14,7 +15,9 @@ All routes accept the `/api` prefix. Unprefixed equivalents exist for the develo
 
 The first successful upload creates a cryptographically random session capability. Subsequent operations send it in `X-Session-Id`. A supplied invalid capability is never silently replaced. The optional body session must match the header. Unknown or expired sessions return 401; unknown and cross-session documents return the same 404. Sessions are tab capabilities, not user accounts.
 
-Repeating the same binary PDF in one session returns the original document and keeps its history; identical PDFs in different sessions never share an index. Deletion clears vectors/history and cancels pending questions. Failed initial uploads release their unused session reservation. Session expiry and server restart require a new upload.
+Repeating the same binary PDF in one session with the same credential scope returns the original document and keeps its history; different keys or sessions never share an index. Deletion clears vectors/history and cancels pending questions. Failed initial uploads release their unused session reservation. Session expiry and server restart require a new upload.
+
+For upload/chat, `X-AI-Key-Source` selects `server` (default) or `personal`. Personal requests need `ALLOW_USER_API_KEYS=true` and one `X-OpenAI-Api-Key` header. A missing personal key is rejected without falling back to server credentials; server-mode requests carrying a personal key are also rejected. The request-local provider calls the fixed OpenAI endpoint with redirects disabled. Keys are never added to responses, document records, or persistent storage; the cached vector store retains no credential-bearing provider closures. A keyed fingerprint scopes the index, and asking with another key/source returns `409 AI_KEY_MISMATCH`. List/delete require only the document session capability.
 
 Supported inputs are text PDFs, including Unicode text when encoded in the document. Image-only scans return 422 with an OCR explanation; encrypted PDFs return 422. Invalid PDFs return 400/415, oversized inputs return 413, capacity/provider throttling returns 429, absent/invalid AI configuration returns 503, and upstream/overall timeouts return 504. Raw provider errors, keys and local paths are not returned.
 

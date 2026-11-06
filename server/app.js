@@ -3,6 +3,7 @@ import cors from 'cors';
 import multer from 'multer';
 import path from 'node:path';
 import fs from 'node:fs';
+import { createAIConnection } from './ai-connection.js';
 
 const MAX_BYTES = 10 * 1024 * 1024;
 const asyncRoute = (handler) => (req, res, next) => Promise.resolve().then(() => handler(req, res, next)).catch(next);
@@ -11,8 +12,9 @@ const publicMetadata = ({ id, name, pageCount, chunkCount }) => ({ id, name, pag
 const sessionToken = /^[A-Za-z0-9_-]{43}$/;
 const safeName = (name) => (String(name || 'document.pdf').split(/[\\/]/).pop().replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 120) || 'document.pdf');
 
-export function createApp({ store, provider, staticDir, corsOrigins = ['http://localhost:3000', 'http://127.0.0.1:3000', 'http://localhost:5001', 'http://127.0.0.1:5001'], requestTimeoutMs = 150_000, maxConcurrentUploads = 2 } = {}) {
+export function createApp({ store, provider, staticDir, corsOrigins = ['http://localhost:3000', 'http://127.0.0.1:3000', 'http://localhost:5001', 'http://127.0.0.1:5001'], requestTimeoutMs = 150_000, maxConcurrentUploads = 2, allowUserKeys = false, providerFactory } = {}) {
   if (!store || !provider) throw new Error('A document store and AI provider are required.');
+  const ai = createAIConnection({ provider, allowUserKeys, providerFactory });
   const app = express();
   app.disable('x-powered-by');
   app.use((req, res, next) => {
@@ -21,7 +23,7 @@ export function createApp({ store, provider, staticDir, corsOrigins = ['http://l
   app.use(cors({ origin(origin, done) {
     if (!origin || corsOrigins.includes(origin)) return done(null, true);
     return done(fail(403, 'ORIGIN_REJECTED', 'This origin is not allowed.'));
-  }, methods: ['GET', 'POST', 'DELETE', 'OPTIONS'], allowedHeaders: ['Content-Type', 'X-Session-Id'] }));
+  }, methods: ['GET', 'POST', 'DELETE', 'OPTIONS'], allowedHeaders: ['Content-Type', 'X-Session-Id', 'X-AI-Key-Source', 'X-OpenAI-Api-Key'] }));
   app.use(express.json({ limit: '16kb', strict: true }));
   const router = express.Router();
   // Bound paid work per running instance as well as limiting concurrent PDF indexing.
@@ -35,6 +37,7 @@ export function createApp({ store, provider, staticDir, corsOrigins = ['http://l
     workTokens--;
   }
   router.get('/health', (req, res) => res.json({ status: 'ok', ai_configured: Boolean(provider.configured) }));
+  router.get('/ai-config', (req, res) => res.json(ai.config));
   function session(req, required = true) {
     const token = req.get('X-Session-Id');
     if (!token && !required) return null;
@@ -63,7 +66,7 @@ export function createApp({ store, provider, staticDir, corsOrigins = ['http://l
   let activeUploads = 0;
   const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_BYTES, files: 1, fields: 0, parts: 1, fieldNameSize: 64, headerPairs: 100 } }).single('file');
   router.post('/upload', asyncRoute(async (req, res, next) => {
-    provider.assertConfigured();
+    const connection = ai.resolve(req);
     const token = session(req, false);
     if (activeUploads >= maxConcurrentUploads) throw fail(429, 'UPLOAD_BUSY', 'The server is processing other PDFs. Please try again shortly.');
     allowAIWork();
@@ -82,7 +85,7 @@ export function createApp({ store, provider, staticDir, corsOrigins = ['http://l
               || !buffer.subarray(0, 1024).includes(Buffer.from('%PDF-'))) throw fail(415, 'INVALID_PDF', 'Only PDF documents are supported.');
           const sessionId = token || store.createSession();
           try {
-            const metadata = await store.create(buffer, { name: safeName(originalname), sessionId, signal });
+            const metadata = await store.create(buffer, { name: safeName(originalname), sessionId, signal, ...connection });
             if (!signal.aborted) response.status(201).json({ document: publicMetadata(metadata), session_id: sessionId });
           } catch (error) {
             if (!token) store.discardEmptySession?.(sessionId);
@@ -104,9 +107,9 @@ export function createApp({ store, provider, staticDir, corsOrigins = ['http://l
         || typeof body.question !== 'string' || !body.question.trim() || Array.from(body.question.trim()).length > 2000) {
       throw fail(400, 'INVALID_QUESTION', 'Select a PDF and ask a question using 1–2000 characters.');
     }
-    provider.assertConfigured();
+    const connection = ai.resolve(req);
     allowAIWork();
-    const result = await store.ask({ documentId: body.document_id, sessionId, question: body.question.trim(), signal });
+    const result = await store.ask({ documentId: body.document_id, sessionId, question: body.question.trim(), signal, ...connection });
     if (!signal.aborted) res.json({ ...result, document_id: body.document_id, session_id: sessionId });
   }));
   app.use('/api', router); app.use('/', router);
@@ -131,7 +134,7 @@ export function createApp({ store, provider, staticDir, corsOrigins = ['http://l
     const status = known && Number.isInteger(error.status) && error.status >= 400 && error.status <= 599 ? error.status : 500;
     const safeServerErrors = {
       AI_NOT_CONFIGURED: 'Set OPENAI_API_KEY on the server before uploading or asking questions.',
-      AI_AUTH_ERROR: 'The server AI credentials are unavailable. Please check the server configuration.',
+      AI_AUTH_ERROR: 'The selected API key was rejected or cannot access the configured models. Check its permissions.',
       AI_UNAVAILABLE: 'The AI service is unavailable. Please try again.', AI_TIMEOUT: 'The AI service timed out. Please try again.',
       REQUEST_TIMEOUT: 'The document request timed out. Please try again.',
     };

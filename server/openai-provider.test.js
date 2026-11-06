@@ -11,6 +11,7 @@ test('no API key fails before sending a request', async () => {
 test('batches embeddings, restores input order, and keeps the key in the server request', async () => {
   const calls = [];
   const provider = createOpenAIProvider({ apiKey: 'local-test-key', fetchImpl: async (url, options) => {
+    assert.equal(options.redirect, 'error');
     const body = JSON.parse(options.body); calls.push({ url, body, headers: options.headers });
     return Response.json({ data: body.input.map((text, index) => ({ index, embedding: [1, Number(text)] })).reverse() });
   } });

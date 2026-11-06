@@ -91,7 +91,28 @@ export async function listDocuments({ signal } = {}) {
   return { ...data, documents: data.documents.map(requireDocument) };
 }
 
-export async function uploadDocument(file, { signal } = {}) {
+export async function getAIConfig({ signal } = {}) {
+  const config = await request('/ai-config', { signal });
+  if (typeof config?.server_configured !== 'boolean' || typeof config?.user_keys_allowed !== 'boolean'
+      || typeof config?.chat_model !== 'string' || !config.chat_model
+      || typeof config?.embedding_model !== 'string' || !config.embedding_model) {
+    throw new ApiError('AI settings could not be loaded. Please try again.');
+  }
+  return config;
+}
+
+function aiHeaders({ keySource = 'server', apiKey } = {}) {
+  if (!['server', 'personal'].includes(keySource)) throw new ApiError('Choose an API key source in AI settings.', 400);
+  const headers = { 'X-AI-Key-Source': keySource };
+  if (keySource === 'personal') {
+    const key = typeof apiKey === 'string' ? apiKey.trim() : '';
+    if (!key) throw new ApiError('Enter your OpenAI API key in AI settings.', 400);
+    headers['X-OpenAI-Api-Key'] = key;
+  }
+  return headers;
+}
+
+export async function uploadDocument(file, { signal, ...connection } = {}) {
   if (!file || !/\.pdf$/i.test(file.name || "")
       || (file.type && !["application/pdf", "application/octet-stream"].includes(file.type))) {
     throw new ApiError("Select a PDF document.", 400);
@@ -99,12 +120,12 @@ export async function uploadDocument(file, { signal } = {}) {
   if (!file.size || file.size > MAX_PDF_BYTES) throw new ApiError("Select a PDF no larger than 10 MiB.", 400);
   const body = new FormData();
   body.append("file", file);
-  const result = await request("/upload", { method: "POST", body, signal });
+  const result = await request("/upload", { method: "POST", body, signal, headers: aiHeaders(connection) });
   if (!getSessionId()) throw new ApiError("The server did not create a document session.");
   return { ...result, document: requireDocument(result?.document) };
 }
 
-export async function askQuestion(documentId, question, { signal } = {}) {
+export async function askQuestion(documentId, question, { signal, ...connection } = {}) {
   const text = typeof question === "string" ? question.trim() : "";
   if (!text || Array.from(text).length > MAX_QUESTION_CHARACTERS) {
     throw new ApiError("Ask a question using 1–2000 characters.", 400);
@@ -113,7 +134,7 @@ export async function askQuestion(documentId, question, { signal } = {}) {
   if (!session || !documentId) throw new ApiError("Upload and select a PDF before asking a question.", 400);
   const data = await request("/chat", {
     method: "POST", signal,
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...aiHeaders(connection) },
     body: JSON.stringify({ document_id: documentId, session_id: session, question: text }),
   });
   if (typeof data?.answer !== "string" || !data.answer.trim() || data.document_id !== documentId) {

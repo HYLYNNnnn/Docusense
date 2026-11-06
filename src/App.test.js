@@ -1,9 +1,10 @@
 import React from "react";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import App from "./App";
 import {
   askQuestion, deleteDocument, getSelectedDocumentId, getSessionId,
   listDocuments, SESSION_EXPIRED_EVENT, uploadDocument,
+  getAIConfig,
 } from "./api";
 
 jest.mock("antd", () => require("./test/antd").default);
@@ -12,12 +13,15 @@ jest.mock("./api", () => ({
   SESSION_EXPIRED_EVENT: "docusense:session-expired",
   getSessionId: jest.fn(), getSelectedDocumentId: jest.fn(), rememberSelectedDocument: jest.fn(),
   listDocuments: jest.fn(), uploadDocument: jest.fn(), askQuestion: jest.fn(), deleteDocument: jest.fn(),
+  getAIConfig: jest.fn(),
 }));
 
 const first = { id: "doc-a", name: "First.pdf", page_count: 2, chunk_count: 3 };
 const second = { id: "doc-b", name: "Second.pdf", page_count: 4, chunk_count: 5 };
 
 beforeEach(() => {
+  getAIConfig.mockResolvedValue({ server_configured: true, user_keys_allowed: true,
+    chat_model: 'gpt-5.6-terra', embedding_model: 'text-embedding-3-small' });
   getSessionId.mockReturnValue(null);
   getSelectedDocumentId.mockReturnValue("");
   listDocuments.mockResolvedValue({ documents: [] });
@@ -41,6 +45,7 @@ function ask(question) {
 
 test("uploads a PDF and enables questions only after indexing succeeds", async () => {
   render(<App />);
+  await screen.findByText('gpt-5.6-terra');
   expect(screen.getByRole("button", { name: "Ask" })).toBeDisabled();
   const file = new File(["%PDF content"], "First.pdf", { type: "application/pdf" });
   fireEvent.change(screen.getByLabelText("Upload PDF"), { target: { files: [file] } });
@@ -123,11 +128,32 @@ test("re-uploading an indexed PDF preserves its displayed conversation", async (
   await waitFor(() => expect(uploadDocument).toHaveBeenCalledTimes(1));
   await waitFor(() => expect(screen.getByLabelText("Upload PDF")).toBeEnabled());
   expect(screen.getByText("Document answer")).toBeInTheDocument();
-  expect(screen.getAllByRole("option")).toHaveLength(2);
+  expect(within(screen.getByLabelText('Current PDF')).getAllByRole("option")).toHaveLength(2);
 });
 
 test("blocks a fourth document until one is deleted", async () => {
   await restore([first, second, { ...first, id: "doc-c", name: "Third.pdf" }]);
   expect(screen.getByLabelText("Upload PDF")).toBeDisabled();
   expect(screen.getByRole("alert")).toHaveTextContent("Delete one before uploading another");
+});
+
+test('personal keys gate uploads and questions and are passed only to the paid operations', async () => {
+  getAIConfig.mockResolvedValue({ server_configured: false, user_keys_allowed: true,
+    chat_model: 'gpt-5.6-terra', embedding_model: 'text-embedding-3-small' });
+  render(<App />);
+  const input = await screen.findByLabelText('OpenAI API key');
+  expect(screen.getByLabelText('Upload PDF')).toBeDisabled();
+  fireEvent.change(input, { target: { value: 'test-personal-key' } });
+  await waitFor(() => expect(screen.getByLabelText('Upload PDF')).toBeEnabled());
+  fireEvent.change(screen.getByLabelText('Upload PDF'), {
+    target: { files: [new File(['%PDF test'], 'First.pdf', { type: 'application/pdf' })] },
+  });
+  await screen.findByLabelText('Current PDF');
+  expect(uploadDocument.mock.calls[0][1]).toMatchObject({ keySource: 'personal', apiKey: 'test-personal-key' });
+  ask('What is in the PDF?');
+  await screen.findByText('Document answer');
+  expect(askQuestion.mock.calls[0][2]).toMatchObject({ keySource: 'personal', apiKey: 'test-personal-key' });
+  fireEvent.click(screen.getByRole('button', { name: 'Clear key' }));
+  expect(screen.getByLabelText('Question about your PDF')).toBeDisabled();
+  expect(screen.getByLabelText('Current PDF')).toHaveValue(first.id);
 });

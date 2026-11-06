@@ -2,6 +2,14 @@
 
 A PDF question-answering application built with React, Ant Design, Express, LangChain and OpenAI. Upload a text PDF, ask follow-up questions, and inspect the retrieved excerpts and their original page numbers.
 
+[Demo](#demo) · [Features](#what-works) · [Run locally](#local-setup) · [API setup](#using-a-personal-api-key)
+
+## Demo
+
+[▶ Watch the DocuSense demo](https://drive.google.com/file/d/1Zq19IsJ1KP_Tukoe9ms7PuynsdLYulZF/view?usp=sharing)
+
+A recorded walkthrough of the locally running application.
+
 ## What works
 
 - Per-document PDF parsing, overlapping text chunks and cached in-memory embeddings. Questions reuse the document index.
@@ -9,6 +17,7 @@ A PDF question-answering application built with React, Ant Design, Express, Lang
 - Retrieval of up to four excerpts, page references and up to six completed conversation turns for follow-ups.
 - Optional browser voice input and answer playback. Typed questions work without speech support.
 - Bounded PDF workers, upload limits, cancellation, timeouts, capacity limits and controlled API errors.
+- Optional temporary personal API keys, with separate credential scopes for cached PDF indexes.
 
 ## Local setup
 
@@ -20,7 +29,7 @@ npm --prefix server ci
 cp server/.env.example server/.env
 ```
 
-Edit `server/.env` and set your own `OPENAI_API_KEY`. Keep this file private. The frontend does not need an API key. Document excerpts, questions and limited conversation history are sent to OpenAI to provide embeddings and answers.
+Edit `server/.env` and choose a key setup: set `OPENAI_API_KEY` for a server-managed key, or set `ALLOW_USER_API_KEYS=true` to enable the personal-key input in **AI settings**. Keep this file private. Never put an API key in build-time frontend configuration. Document text is sent to OpenAI to create embeddings; questions, retrieved excerpts and limited conversation history are sent to generate answers.
 
 ```sh
 npm run dev
@@ -28,13 +37,31 @@ npm run dev
 
 Open `http://localhost:3000`. The development proxy forwards `/api` requests to `http://127.0.0.1:5001`. If either process fails, stop the development command, resolve the reported error and run it again.
 
-Without a server API key, the page and health endpoint still load; upload and question requests return an explicit 503 configuration error. They do not fabricate model answers.
+Without either key source, the page still loads but uploading and asking questions remain disabled. The application does not fabricate model answers.
+
+## How the API is used
+
+1. **Upload and index:** Extract text from the PDF, split it into overlapping chunks, and send those chunks to the OpenAI Embeddings API. Cache the resulting vectors for that document.
+2. **Ask and follow up:** Embed the question, retrieve relevant chunks, then call Chat Completions with those excerpts and recent conversation. Return the answer together with the actual retrieved text and page numbers.
+
+The defaults are `text-embedding-3-small` for search and `gpt-5.6-terra` for answers. Voice input and answer playback use optional browser speech features, not a separate OpenAI speech API.
+
+## Using a personal API key
+
+With `ALLOW_USER_API_KEYS=true`, open **AI settings → Use my API key** and enter your OpenAI API key. Uploading a PDF or pressing **Ask** sends that key to this DocuSense server, which calls OpenAI. Both operations can consume your API account's quota; typing a key does not make a provider request.
+
+The key stays in the current page's React state and request-local backend provider. It is not saved to browser storage, cookies, the document index, files, or logs. Clear it with **Clear key**; leaving or refreshing the page also discards it. After refreshing, re-enter the same key to continue with an indexed PDF. Keys are not included in list/delete requests.
+
+Each PDF index is bound to its key source and a keyed, non-reversible credential fingerprint. Using a different key/source for that PDF returns a readable conflict instead of silently using another account. Re-upload with the new key to create a separate index; duplicate uploads reuse the cache only when the document session and credential scope match. Models remain server-configured to preserve embedding compatibility.
+
+Personal keys are disabled by default. Enable them only on a server you trust, with HTTPS for hosted use; localhost previews can use HTTP. Requests use a fixed OpenAI endpoint and reject redirects. A valid key needs access and quota for both configured models.
 
 ## Configuration
 
 | Setting | Location | Default |
 | --- | --- | --- |
-| `OPENAI_API_KEY` | Server only | Required for indexing/questions |
+| `OPENAI_API_KEY` | Server only | Required for the server-managed key option |
+| `ALLOW_USER_API_KEYS` | Server only | `false`; enables temporary personal keys when `true` |
 | `OPENAI_CHAT_MODEL` | Server only | `gpt-5.6-terra` |
 | `OPENAI_EMBEDDING_MODEL` | Server only | `text-embedding-3-small` |
 | `PORT`, `HOST` | Server only | `5001`, `127.0.0.1` |
@@ -79,6 +106,8 @@ npm --prefix server test
 CI=true npm run build
 ```
 
-Tests use synthetic PDFs and local fake model responses. Integration tests exercise the real PDF worker, LangChain vector store, HTTP routes and OpenAI adapter against a local mock upstream. No real OpenAI request, account key or private uploaded PDF is used. Docker and live OpenAI behavior have not been tested.
+Automated tests use synthetic PDFs and local fake model responses. Integration tests exercise the real PDF worker, LangChain vector store, HTTP routes and OpenAI adapter against a local mock upstream. No real OpenAI request, account key or private uploaded PDF is used in these tests. Docker has not been tested in this workspace.
+
+Verified on 2026-11-05 after adding personal keys: 35 frontend tests and 45 backend tests passed, and the strict production build succeeded. Checks cover credential-scoped index reuse, mismatched-key rejection, request-local provider credentials, missing-key protection, and the existing PDF/conversation flows. Live account permissions, quotas and answer quality are not covered by these automated tests. The author-recorded local demo is linked above.
 
 Frontend details: [FRONTEND.md](FRONTEND.md). API contract: [server/README.md](server/README.md). Repair notes: [修复说明.zh-CN.md](修复说明.zh-CN.md).

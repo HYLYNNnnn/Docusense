@@ -1,4 +1,4 @@
-// Server-only adapter: PDF text and questions never need a browser API key.
+// All provider calls run on the server with server or request-local credentials.
 export class ProviderError extends Error {
   constructor(status, code, message) {
     super(message);
@@ -26,13 +26,13 @@ export function createOpenAIProvider({
     const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
     try {
       const response = await fetchImpl(`${baseURL.replace(/\/$/, '')}${path}`, {
-        method: 'POST', signal: combined,
+        method: 'POST', signal: combined, redirect: 'error',
         headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body),
       });
       if (!response.ok) {
         await response.body?.cancel();
         if (response.status === 429) throw new ProviderError(429, 'AI_RATE_LIMIT', 'The AI service is busy or its quota is exhausted. Please try later.');
-        if (response.status === 401 || response.status === 403) throw new ProviderError(503, 'AI_AUTH_ERROR', 'The server AI credentials are unavailable. Please check the server configuration.');
+        if (response.status === 401 || response.status === 403) throw new ProviderError(503, 'AI_AUTH_ERROR', 'The selected API key was rejected or cannot access the configured models. Check its permissions.');
         throw unavailable();
       }
       const reader = response.body.getReader();
